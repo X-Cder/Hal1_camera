@@ -82,7 +82,7 @@ jobs:
           t = ET.parse('.repo/manifests/default.xml')
           drop_prefix = ('cts', 'test/', 'developers/', 'packages/apps/', 'packages/inputmethods/',
                          'packages/providers/', 'packages/screensavers/', 'packages/wallpapers/',
-                         'prebuilts/vndk', 'prebuilts/abi-dumps', 'prebuilts/android-emulator',
+                         'prebuilts/android-emulator',
                          'prebuilts/qemu-kernel', 'prebuilts/fullsdk', 'external/chromium-webview',
                          'kernel/prebuilts', 'platform_testing')
           out = ['<?xml version="1.0" encoding="UTF-8"?>', '<manifest>']
@@ -142,7 +142,7 @@ jobs:
           export BUILD_BROKEN_MISSING_REQUIRED_MODULES=true BUILD_NUMBER=hal1camera USE_CCACHE=0
           source build/envsetup.sh >/dev/null 2>&1
           lunch aosp_arm64-userdebug 2>&1 | tail -15
-          m -j"$JOBS" libcameraservice libcamera_client 2>&1 | tee /mnt/build.log | tail -n 40
+          m -j"$JOBS" libcameraservice libcamera_client 2>&1 | tee "$HOME/build.log" | tail -n 40
           rc=${PIPESTATUS[0]}
           echo "m exit code: $rc"
           df -h /mnt
@@ -181,7 +181,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p "$HOME/logs"
-          cp /mnt/build.log "$HOME/logs/" 2>/dev/null || true
+          cp "$HOME/build.log" "$HOME/logs/" 2>/dev/null || true
           cp /mnt/aosp/out/error.log "$HOME/logs/" 2>/dev/null || true
           cp /mnt/aosp/out/verbose.log.gz "$HOME/logs/" 2>/dev/null || true
           ls -l "$HOME/logs" || true
