@@ -1,0 +1,194 @@
+name: Build HAL1 camera libs (Android 12.1)
+
+# Android 12 deleted camera HAL1 support, so its cameraserver refuses vendors that only ship a
+# camera.device@1.0 HAL (Android 9 MediaTek, e.g. Infinix X604).
+# This workflow builds Android 12.1's libcameraservice + libcamera_client from the LineageOS 19.1
+# source with the "restore camera HALv1 support" patch applied, and publishes them as a release.
+# The second workflow (gsi-camera-fix) injects those two libraries into your A12 GSI image.
+#
+# The patch is taken from pinned commits (immutable) of a public fork:
+#   Oichkatzelesfrettschen/android_frameworks_av  8ad4e1d..c1c7034  (limited to camera/ and libcameraservice/)
+# This is Lineage's "Camera: Restore camera HALv1 support" plus fixes. It was reviewed: no network,
+# exec or property code is added. The ICameraService.aidl change is adjusted so that the new
+# connectLegacy() call goes LAST, which keeps every binder transaction number of stock Android 12.
+#
+# Expect 2-4 hours. If it fails, download the "build-log" artifact (or paste the last 80 lines).
+
+on:
+  workflow_dispatch:
+    inputs:
+      lineage_branch:
+        description: "LineageOS branch to build from"
+        default: "lineage-19.1"
+        required: true
+      release_tag:
+        description: "Release tag that receives the built libraries"
+        default: "hal1-camera-libs"
+        required: true
+      jobs:
+        description: "Parallel compile jobs"
+        default: "4"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 355
+    env:
+      BRANCH: ${{ inputs.lineage_branch }}
+      TAG: ${{ inputs.release_tag }}
+      JOBS: ${{ inputs.jobs }}
+      GH_TOKEN: ${{ github.token }}
+      FORK_URL: https://github.com/Oichkatzelesfrettschen/android_frameworks_av
+      FORK_BASE: 8ad4e1d710fab315ff7ce461eed1efa60f282828
+      FORK_HEAD: c1c7034e960f5ae8637364a42fdebd640e03d4c4
+    steps:
+      - name: Free disk space
+        run: |
+          set -x
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift /usr/local/.ghcup 2>/dev/null || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h / /mnt
+          # the second (temporary) disk becomes the build disk
+          sudo mkdir -p /mnt/aosp && sudo chown "$USER":"$USER" /mnt/aosp
+          # 8 GB swap on the temporary disk, the linker steps can be memory hungry
+          sudo fallocate -l 8G /mnt/swapfile && sudo chmod 600 /mnt/swapfile && sudo mkswap /mnt/swapfile && sudo swapon /mnt/swapfile || true
+          free -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+            libc6-dev-i386 libncurses5 lib32ncurses-dev x11proto-core-dev libx11-dev lib32z1-dev \
+            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3 python-is-python3 \
+            rsync bc lz4 openjdk-11-jdk-headless libssl-dev patchelf binutils file
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          git config --global user.name "ci"; git config --global user.email "ci@example.invalid"
+          git config --global color.ui false
+
+      - name: Sync a trimmed LineageOS source tree
+        working-directory: /mnt/aosp
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          repo init -u https://github.com/LineageOS/android.git -b "$BRANCH" --depth=1 --no-clone-bundle --no-tags </dev/null
+          # drop projects that cannot matter for a native camera library (saves ~15 GB)
+          python3 - <<'PY'
+          import re, xml.etree.ElementTree as ET
+          t = ET.parse('.repo/manifests/default.xml')
+          drop_prefix = ('cts', 'test/', 'developers/', 'packages/apps/', 'packages/inputmethods/',
+                         'packages/providers/', 'packages/screensavers/', 'packages/wallpapers/',
+                         'prebuilts/vndk', 'prebuilts/abi-dumps', 'prebuilts/android-emulator',
+                         'prebuilts/qemu-kernel', 'prebuilts/fullsdk', 'external/chromium-webview',
+                         'kernel/prebuilts', 'platform_testing')
+          out = ['<?xml version="1.0" encoding="UTF-8"?>', '<manifest>']
+          n = 0
+          for p in t.getroot().iter('project'):
+              path = p.get('path') or p.get('name')
+              if path.startswith(drop_prefix):
+                  out.append('  <remove-project name="%s" />' % p.get('name')); n += 1
+          out.append('</manifest>')
+          import os
+          os.makedirs('.repo/local_manifests', exist_ok=True)
+          open('.repo/local_manifests/trim.xml', 'w').write('\n'.join(out) + '\n')
+          print('removing', n, 'projects')
+          PY
+          repo sync -c -j8 --no-tags --no-clone-bundle --optimized-fetch --force-sync --fail-fast </dev/null \
+            || repo sync -c -j4 --no-tags --no-clone-bundle --optimized-fetch --force-sync </dev/null
+          df -h /mnt
+
+      - name: Apply the HAL1 patch to frameworks/av
+        working-directory: /mnt/aosp/frameworks/av
+        run: |
+          set -euo pipefail
+          git status --short | head -3 || true
+          git fetch --depth=1 "$FORK_URL" "$FORK_BASE"
+          git fetch --depth=1 "$FORK_URL" "$FORK_HEAD"
+          git diff --binary "$FORK_BASE" "$FORK_HEAD" -- camera services/camera/libcameraservice > /tmp/hal1.patch
+          wc -l /tmp/hal1.patch
+          # safety review: the patch must not add process, network or property calls
+          if grep -nE '^\+.*(system\(|popen\(|execv|execl|socket\(|curl|wget|property_set|dlopen\()' /tmp/hal1.patch; then
+            echo "::error::unexpected call in the HAL1 patch"; exit 1
+          fi
+          git apply --check /tmp/hal1.patch
+          git apply --whitespace=nowarn /tmp/hal1.patch
+          # keep stock binder transaction numbers: move connectLegacy to the END of ICameraService
+          python3 - <<'PY'
+          p = 'camera/aidl/android/hardware/ICameraService.aidl'
+          s = open(p).read()
+          start = s.index('    /**\n     * halVersion constant for connectLegacy')
+          end = s.index('    /**\n     * Add listener for changes to camera device and flashlight state.')
+          block = s[start:end]
+          assert 'connectLegacy' in block
+          s = s[:start] + s[end:]
+          i = s.rstrip().rfind('}')
+          s = s[:i].rstrip('\n') + '\n\n' + block.rstrip('\n') + '\n}\n'
+          open(p, 'w').write(s)
+          PY
+          grep -n "connectLegacy" camera/aidl/android/hardware/ICameraService.aidl
+          tail -22 camera/aidl/android/hardware/ICameraService.aidl
+          test -f services/camera/libcameraservice/device1/CameraHardwareInterface.cpp
+
+      - name: Build libcameraservice and libcamera_client
+        working-directory: /mnt/aosp
+        run: |
+          set +e
+          export PATH="$HOME/bin:$PATH"
+          export LC_ALL=C ALLOW_MISSING_DEPENDENCIES=true SKIP_ABI_CHECKS=true WITHOUT_CHECK_API=true
+          export BUILD_BROKEN_MISSING_REQUIRED_MODULES=true BUILD_NUMBER=hal1camera USE_CCACHE=0
+          source build/envsetup.sh >/dev/null 2>&1
+          lunch aosp_arm64-userdebug 2>&1 | tail -15
+          m -j"$JOBS" libcameraservice libcamera_client 2>&1 | tee /mnt/build.log | tail -n 40
+          rc=${PIPESTATUS[0]}
+          echo "m exit code: $rc"
+          df -h /mnt
+          exit "$rc"
+
+      - name: Collect the libraries
+        run: |
+          set -euo pipefail
+          OUT=/mnt/aosp/out/target/product
+          CS=$(find "$OUT" -path '*/system/lib64/libcameraservice.so' | head -1)
+          CC=$(find "$OUT" -path '*/system/lib64/libcamera_client.so' | head -1)
+          [ -n "$CS" ] && [ -n "$CC" ] || { echo "::error::libraries not found in $OUT"; find /mnt/aosp/out -name 'libcameraservice*' | head; exit 1; }
+          mkdir -p "$HOME/pub"
+          cp "$CS" "$HOME/pub/libcameraservice.so"; cp "$CC" "$HOME/pub/libcamera_client.so"
+          for f in "$HOME"/pub/*.so; do readelf -h "$f" | grep -E 'Class|Machine'; done
+          n=$(strings -a "$HOME/pub/libcameraservice.so" | grep -c CameraHardwareInterface || true)
+          echo "HAL1 marker strings in libcameraservice: $n"
+          [ "$n" -gt 0 ] || { echo "::error::built libcameraservice has no HAL1 code"; exit 1; }
+          readelf -d "$HOME/pub/libcameraservice.so" | grep NEEDED | sed 's/.*\[//;s/\]//' | tr '\n' ' ' > "$HOME/pub/needed.txt"
+          cat "$HOME/pub/needed.txt"; echo
+          ls -l "$HOME/pub"
+          cd "$HOME/pub" && zip -9 hal1-camera-libs.zip libcameraservice.so libcamera_client.so needed.txt
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          cd "$HOME/pub"
+          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "$TAG" hal1-camera-libs.zip libcameraservice.so libcamera_client.so \
+            --title "HAL1 camera libs (A12.1, $BRANCH)" \
+            --notes "libcameraservice.so + libcamera_client.so for arm64 Android 12.1 with camera HAL1 support restored. Use with the gsi-camera-fix workflow."
+          echo "### Download link for the next workflow" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/hal1-camera-libs.zip" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the build log on failure
+        if: failure()
+        run: |
+          mkdir -p "$HOME/logs"
+          cp /mnt/build.log "$HOME/logs/" 2>/dev/null || true
+          cp /mnt/aosp/out/error.log "$HOME/logs/" 2>/dev/null || true
+          cp /mnt/aosp/out/verbose.log.gz "$HOME/logs/" 2>/dev/null || true
+          ls -l "$HOME/logs" || true
+      - name: Upload log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /home/runner/logs
+          if-no-files-found: ignore
