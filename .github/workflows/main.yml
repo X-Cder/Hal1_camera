@@ -76,26 +76,25 @@ jobs:
         run: |
           export PATH="$HOME/bin:$PATH"
           repo init -u https://github.com/LineageOS/android.git -b "$BRANCH" --depth=1 --no-clone-bundle --no-tags </dev/null
-          # drop projects that cannot matter for a native camera library (saves ~15 GB)
+          # drop a few big projects that cannot matter for a native camera library. If the build later
+          # reports a missing file inside one of them, the build step re-adds that project automatically.
           python3 - <<'PY'
-          import re, xml.etree.ElementTree as ET
+          import os, xml.etree.ElementTree as ET
           t = ET.parse('.repo/manifests/default.xml')
-          drop_prefix = ('cts', 'test/', 'developers/', 'packages/apps/', 'packages/inputmethods/',
-                         'packages/screensavers/', 'packages/wallpapers/',
-                         'prebuilts/android-emulator',
-                         'prebuilts/qemu-kernel', 'prebuilts/fullsdk', 'external/chromium-webview',
-                         'kernel/prebuilts', 'platform_testing')
+          drop_prefix = ('cts', 'developers/', 'prebuilts/android-emulator', 'prebuilts/qemu-kernel',
+                         'prebuilts/fullsdk', 'external/chromium-webview', 'kernel/prebuilts')
           out = ['<?xml version="1.0" encoding="UTF-8"?>', '<manifest>']
-          n = 0
+          rec = []
           for p in t.getroot().iter('project'):
               path = p.get('path') or p.get('name')
-              if path.startswith(drop_prefix):
-                  out.append('  <remove-project name="%s" />' % p.get('name')); n += 1
+              if path == 'cts' or path.startswith(drop_prefix[1:]):
+                  out.append('  <remove-project name="%s" />' % p.get('name'))
+                  rec.append('%s\t%s' % (p.get('name'), path))
           out.append('</manifest>')
-          import os
           os.makedirs('.repo/local_manifests', exist_ok=True)
           open('.repo/local_manifests/trim.xml', 'w').write('\n'.join(out) + '\n')
-          print('removing', n, 'projects')
+          open('/tmp/dropped.tsv', 'w').write('\n'.join(rec) + '\n')
+          print('removing', len(rec), 'projects')
           PY
           repo sync -c -j8 --no-tags --no-clone-bundle --optimized-fetch --force-sync --fail-fast </dev/null \
             || repo sync -c -j4 --no-tags --no-clone-bundle --optimized-fetch --force-sync </dev/null
@@ -167,11 +166,44 @@ jobs:
           export PATH="$HOME/bin:$PATH"
           export LC_ALL=C ALLOW_MISSING_DEPENDENCIES=true SKIP_ABI_CHECKS=true WITHOUT_CHECK_API=true
           export BUILD_BROKEN_MISSING_REQUIRED_MODULES=true BUILD_NUMBER=hal1camera USE_CCACHE=0
+          cat > /tmp/heal.py <<'PY'
+          import re, sys
+          log = open(sys.argv[1], errors='replace').read()
+          wanted = set(re.findall(r'([A-Za-z0-9_./+@-]+): No such file or directory', log))
+          wanted |= set(re.findall(r"No rule to make target '([^']+)'", log))
+          wanted |= set(re.findall(r'cannot find\s+(?:file|module|path)?\s*"?([A-Za-z0-9_./+@-]+)', log, re.I))
+          dropped = [l.rstrip('\n').split('\t') for l in open('/tmp/dropped.tsv') if '\t' in l]
+          back = set()
+          for w in wanted:
+              w = w.lstrip('./')
+              for name, path in dropped:
+                  if w == path or w.startswith(path + '/'):
+                      back.add(name)
+          if not back:
+              sys.exit(2)
+          m = open('.repo/local_manifests/trim.xml').read()
+          for name in back:
+              m = m.replace('  <remove-project name="%s" />\n' % name, '')
+          open('.repo/local_manifests/trim.xml', 'w').write(m)
+          print('re-adding:', ' '.join(sorted(back)))
+          PY
           source build/envsetup.sh >/dev/null 2>&1
-          lunch aosp_arm64-userdebug 2>&1 | tail -15
-          m -j"$JOBS" libcameraservice libcamera_client 2>&1 | tee "$HOME/build.log" | tail -n 40
-          rc=${PIPESTATUS[0]}
-          echo "m exit code: $rc"
+          rc=1
+          for attempt in 1 2 3 4 5 6; do
+            echo "=== build attempt $attempt ==="
+            lunch aosp_arm64-userdebug 2>&1 | tail -3
+            m -j"$JOBS" libcameraservice libcamera_client 2>&1 | tee "$HOME/build.log" | tail -n 25
+            rc=${PIPESTATUS[0]}
+            echo "m exit code: $rc"
+            [ "$rc" -eq 0 ] && break
+            cp "$HOME/build.log" "$HOME/build.attempt$attempt.log"
+            if python3 /tmp/heal.py "$HOME/build.log"; then
+              repo sync -c -j8 --no-tags --no-clone-bundle --optimized-fetch --force-sync </dev/null >/dev/null 2>&1
+              [ -f /tmp/dropped.tsv ] && echo "synced the re-added project(s), retrying"
+            else
+              echo "nothing to re-add, giving up"; break
+            fi
+          done
           df -h /mnt
           exit "$rc"
 
@@ -208,7 +240,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p "$HOME/logs"
-          cp "$HOME/build.log" "$HOME/logs/" 2>/dev/null || true
+          cp "$HOME"/build*.log "$HOME/logs/" 2>/dev/null || true
           cp /mnt/aosp/out/error.log "$HOME/logs/" 2>/dev/null || true
           cp /mnt/aosp/out/verbose.log.gz "$HOME/logs/" 2>/dev/null || true
           ls -l "$HOME/logs" || true
