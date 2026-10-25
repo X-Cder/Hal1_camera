@@ -81,7 +81,7 @@ jobs:
           import re, xml.etree.ElementTree as ET
           t = ET.parse('.repo/manifests/default.xml')
           drop_prefix = ('cts', 'test/', 'developers/', 'packages/apps/', 'packages/inputmethods/',
-                         'packages/providers/', 'packages/screensavers/', 'packages/wallpapers/',
+                         'packages/screensavers/', 'packages/wallpapers/',
                          'prebuilts/android-emulator',
                          'prebuilts/qemu-kernel', 'prebuilts/fullsdk', 'external/chromium-webview',
                          'kernel/prebuilts', 'platform_testing')
