@@ -161,6 +161,10 @@ jobs:
           # Lineage also defines an apns-conf.xml module that collides with the generic product's copy rule
           printf 'LOCAL_PATH := $(call my-dir)\n' > vendor/lineage/prebuilt/common/Android.mk
           cat vendor/lineage/prebuilt/common/Android.mk
+          # Lineage's device-only packaging tasks (kernel, ota, bootimage...) fail with a generic product
+          # and are irrelevant to a library build: empty them all
+          for f in vendor/lineage/build/tasks/*.mk; do echo "# emptied for the library build" > "$f"; done
+          ls vendor/lineage/build/tasks
 
       - name: Build libcameraservice and libcamera_client
         working-directory: /mnt/aosp
