@@ -194,7 +194,11 @@ jobs:
           rc=1
           for attempt in 1 2 3 4 5 6; do
             echo "=== build attempt $attempt ==="
-            lunch aosp_arm64-userdebug 2>&1 | tail -3
+            # no pipe here: lunch must run in this shell or its variables are lost (that built 32-bit libs once)
+            lunch aosp_arm64-userdebug > "$HOME/lunch.log" 2>&1
+            tail -3 "$HOME/lunch.log"
+            echo "target: product=$TARGET_PRODUCT arch=$TARGET_ARCH out=$ANDROID_PRODUCT_OUT"
+            [ "$TARGET_ARCH" = arm64 ] || { echo "::error::lunch did not select arm64"; exit 1; }
             m -j"$JOBS" libcameraservice libcamera_client 2>&1 | tee "$HOME/build.log" | tail -n 25
             rc=${PIPESTATUS[0]}
             echo "m exit code: $rc"
