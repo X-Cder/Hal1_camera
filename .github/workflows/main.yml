@@ -7,7 +7,7 @@ name: Build HAL1 camera libs (Android 12.1)
 # The second workflow (gsi-camera-fix) injects those two libraries into your A12 GSI image.
 #
 # The patch is taken from pinned commits (immutable) of a public fork:
-#   Oichkatzelesfrettschen/android_frameworks_av  8ad4e1d..c1c7034  (limited to camera/ and libcameraservice/)
+#   Oichkatzelesfrettschen/android_frameworks_av  8ad4e1d..c1c7034  (limited to camera/, libcameraservice/, libstagefright/)
 # This is Lineage's "Camera: Restore camera HALv1 support" plus fixes. It was reviewed: no network,
 # exec or property code is added. The ICameraService.aidl change is adjusted so that the new
 # connectLegacy() call goes LAST, which keeps every binder transaction number of stock Android 12.
@@ -107,7 +107,7 @@ jobs:
           git status --short | head -3 || true
           git fetch --depth=1 "$FORK_URL" "$FORK_BASE"
           git fetch --depth=1 "$FORK_URL" "$FORK_HEAD"
-          git diff --binary "$FORK_BASE" "$FORK_HEAD" -- camera services/camera/libcameraservice > /tmp/hal1.patch
+          git diff --binary "$FORK_BASE" "$FORK_HEAD" -- camera services/camera/libcameraservice media/libstagefright cmds/stagefright > /tmp/hal1.patch
           wc -l /tmp/hal1.patch
           # safety review: the patch must not add process, network or property calls
           if grep -nE '^\+.*(system\(|popen\(|execv|execl|socket\(|curl|wget|property_set|dlopen\()' /tmp/hal1.patch; then
