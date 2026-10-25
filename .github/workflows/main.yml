@@ -225,8 +225,8 @@ jobs:
         run: |
           set -euo pipefail
           OUT=/mnt/aosp/out/target/product
-          CS=$(find "$OUT" -path '*/system/lib64/libcameraservice.so' | head -1)
-          CC=$(find "$OUT" -path '*/system/lib64/libcamera_client.so' | head -1)
+          CS=$(find "$OUT" -path '*/system/lib64/libcameraservice.so' -print -quit)
+          CC=$(find "$OUT" -path '*/system/lib64/libcamera_client.so' -print -quit)
           [ -n "$CS" ] && [ -n "$CC" ] || { echo "::error::libraries not found in $OUT"; find /mnt/aosp/out -name 'libcameraservice*' | head; exit 1; }
           mkdir -p "$HOME/pub"
           cp "$CS" "$HOME/pub/libcameraservice.so"; cp "$CC" "$HOME/pub/libcamera_client.so"
@@ -243,8 +243,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "$HOME/pub"
-          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
-          gh release create "$TAG" hal1-camera-libs.zip libcameraservice.so libcamera_client.so \
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "$TAG" hal1-camera-libs.zip libcameraservice.so libcamera_client.so --repo "$GITHUB_REPOSITORY" \
             --title "HAL1 camera libs (A12.1, $BRANCH)" \
             --notes "libcameraservice.so + libcamera_client.so for arm64 Android 12.1 with camera HAL1 support restored. Use with the gsi-camera-fix workflow."
           echo "### Download link for the next workflow" >> "$GITHUB_STEP_SUMMARY"
