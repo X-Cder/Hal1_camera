@@ -1,4 +1,4 @@
-name: Build HAL1 camera and flashlight libs (Android 12.1)
+name: Build HAL1 camera libs (Android 12.1)
 
 # Android 12 deleted camera HAL1 support, so its cameraserver refuses vendors that only ship a
 # camera.device@1.0 HAL (Android 9 MediaTek, e.g. Infinix X604).
@@ -142,7 +142,9 @@ jobs:
           '        }',
           ]) + '\n'
           extra = '\n'.join([
-          '        if (res == NAME_NOT_FOUND && deviceVersion.get_major() == 1) {',
+          '        hardware::hidl_version hal1Version{0,0};',
+          '        if (mCameraProviderManager->getHighestSupportedVersion(cameraIdStr, &hal1Version) == OK &&',
+          '                hal1Version.get_major() == 1) {',
           '            hardware::CameraInfo legacyInfo;',
           '            if (mCameraProviderManager->getCameraInfo(cameraIdStr, &legacyInfo) == OK) {',
           '                CameraMetadata md(10, 200);',
