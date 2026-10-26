@@ -1,4 +1,4 @@
-name: Build HAL1 camera libs (Android 12.1)
+name: Build HAL1 camera and flashlight libs (Android 12.1)
 
 # Android 12 deleted camera HAL1 support, so its cameraserver refuses vendors that only ship a
 # camera.device@1.0 HAL (Android 9 MediaTek, e.g. Infinix X604).
